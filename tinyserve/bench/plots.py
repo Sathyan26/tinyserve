@@ -59,5 +59,20 @@ def hardware() -> str:
     return cpu
 
 
+def power_plan() -> str:
+    """Active Windows power plan: CPU speed results depend on it (see LOG.md)."""
+    if platform.system() != "Windows":
+        return "n/a"
+    try:
+        import subprocess
+
+        out = subprocess.run(
+            ["powercfg", "/getactivescheme"], capture_output=True, text=True, timeout=10
+        ).stdout
+        return out.split("(")[-1].rstrip(")\n ") if "(" in out else out.strip()
+    except Exception:
+        return "unknown"
+
+
 def footer(model: str, dtype: str, runs: str) -> str:
     return f"{hardware()} · {model} · {dtype} · {runs} · {date.today().isoformat()}"

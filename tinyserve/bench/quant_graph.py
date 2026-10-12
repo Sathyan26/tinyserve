@@ -13,7 +13,7 @@ import matplotlib.pyplot as plt
 import torch
 
 from tinyserve.bench.perplexity import load_wikitext2_test, perplexity
-from tinyserve.bench.plots import INK_2, SERIES, footer, style
+from tinyserve.bench.plots import INK_2, SERIES, footer, power_plan, style
 from tinyserve.engine.generate import generate
 from tinyserve.engine.sampler import SamplingParams
 from tinyserve.model.gpt2 import GPT2
@@ -79,7 +79,13 @@ def measure(reuse_ppl: dict[str, float] | None = None) -> dict:
             f"{name:5s} {rows[-1]['mb']:6.0f} MB  {rows[-1]['tok_s']:5.1f} tok/s "
             f"[{min(r):.1f}-{max(r):.1f}]  ppl {ppl:.3f}"
         )
-    return {"ppl_tokens": len(text_ids), "gen_tokens": GEN_TOKENS, "runs": RUNS, "rows": rows}
+    return {
+        "ppl_tokens": len(text_ids),
+        "gen_tokens": GEN_TOKENS,
+        "runs": RUNS,
+        "power_plan": power_plan(),
+        "rows": rows,
+    }
 
 
 def plot(data: dict, out: Path) -> None:
@@ -137,17 +143,15 @@ def plot(data: dict, out: Path) -> None:
         fontsize=11,
         fontweight="bold",
     )
-    fig.text(
-        0.01,
-        0.01,
-        footer(
-            "GPT-2 small",
-            f"WikiText-2 ppl on {data['ppl_tokens'] // 1000}k tokens",
-            f"{data['gen_tokens']} greedy tokens, round-robin",
-        ),
-        fontsize=8,
-        color=INK_2,
+    note = footer(
+        "GPT-2 small",
+        f"WikiText-2 ppl on {data['ppl_tokens'] // 1000}k tokens",
+        f"{data['gen_tokens']} greedy tokens, round-robin",
     )
+    plan = data.get("power_plan", "unknown")
+    if plan not in ("High performance", "Ultimate Performance", "n/a"):
+        note += f" · power plan '{plan}': CPU speeds preliminary"
+    fig.text(0.01, 0.01, note, fontsize=8, color=INK_2)
     fig.tight_layout(rect=(0, 0.05, 1, 0.92))
     out.parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(out, dpi=150)
