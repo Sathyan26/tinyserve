@@ -68,3 +68,10 @@ One entry per problem: date, symptom, hypotheses, what fixed it. Week 5's debugg
 - **Why int8 is only 49% of fp32, not 25%:** the tied 38.6M-parameter embedding/head (154 MB fp32) is deliberately left unquantized and is now the biggest single tensor.
 - **Unexplained, noted:** int8 max |logit diff| is 9.3 while KL stays tiny. The big differences must be on low-probability tokens or one position (GPT-2 has very large activations at position 0). Not investigated yet; check in 4.2 or experiment 4.
 - **Fix needed along the way:** KV caches were always fp32; a bf16/fp16 model then fed fp32 keys into SDPA next to bf16 queries. Caches now take `model.dtype`.
+
+## 2026-10-12 — Step 4.2 perplexity + quant graph; benchmark noise root-caused
+- **Perplexity (WikiText-2 test, first 50k tokens, window 1024 / stride 512):** fp32 27.243 · fp16 27.246 (+0.01%) · int8 27.264 (+0.08%) · bf16 27.513 (+0.99%). Our model + our ppl code matches the HF model through the same code to 1e-4 relative (test). Deterministic, so these are final.
+- **Symptom:** speed runs inconsistent. First pass had bf16 faster than fp16 (67 vs 59 tok/s) with bf16's runs spanning 49–67; second pass fp32 spanned 16.2–32.4 tok/s (2x).
+- **Hypotheses:** (1) variants measured one after another, so clock drift hits them unequally -> switched to round-robin; medians became plausible but spread stayed. (2) thread oversubscription -> no: torch already uses 8 threads = physical cores; 4 threads no better. (3) power management -> **yes**: active scheme is "Battery Save" while on AC. Same settings, back-to-back: 17.3 then 26.5 tok/s median.
+- **Fix:** switch Windows power mode to Best performance before any speed benchmark, and record the power plan in results. CPU speed numbers in quant.json are PRELIMINARY until re-run. Final speed numbers come from Colab anyway (4.6).
+- **Lesson:** this is why the spec demands warmup + medians over several runs + hardware in every footer. A single run would have published bf16 > fp16, which the round-robin medians don't support.
