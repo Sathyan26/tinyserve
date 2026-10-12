@@ -71,3 +71,53 @@ def test_rejects_oversized_request(model):
     sched = Scheduler(model, max_slots=1, max_len=16)
     with pytest.raises(ValueError):
         sched.add(Request([1] * 10, SamplingParams(max_tokens=10)))
+
+
+# ---- 4.3: baseline modes share everything but the admission rule ----
+
+
+@pytest.mark.slow
+@pytest.mark.parametrize("mode", ["serial", "static"])
+def test_baseline_modes_match_single_request(model, tokenizer, mode):
+    work = make_workload(tokenizer, greedy=True, n=10, seed=1)
+    sched = Scheduler(model, max_slots=4, max_len=256, mode=mode, batch_wait_s=0)
+    reqs = [Request(ids, p) for ids, p in work]
+    for r in reqs:
+        sched.add(r)
+    sched.run_until_done()
+    for (ids, p), r in zip(work, reqs, strict=True):
+        assert r.out == generate(model, ids, p).token_ids
+
+    if mode == "serial":
+        assert max(sched.batch_sizes) == 1
+    else:  # static: a batch is admitted together and nobody joins until all of it is done
+        batches: dict[int, list[Request]] = {}
+        for r in reqs:
+            batches.setdefault(r.admitted_step, []).append(r)
+        starts = sorted(batches)
+        assert len(batches[starts[0]]) == 4  # full first batch
+        for prev, nxt in zip(starts, starts[1:], strict=False):
+            assert nxt >= max(r.finished_step for r in batches[prev])
+
+
+def test_unknown_mode_rejected(model):
+    with pytest.raises(ValueError):
+        Scheduler(model, mode="fastest")
+
+
+@pytest.mark.parametrize("ignore_eos", [False, True])
+def test_ignore_eos(model, monkeypatch, ignore_eos):
+    """Force the sampler to always pick EOS: normally the request ends at once with no
+    tokens; with ignore_eos it runs to exactly max_tokens (benchmarks rely on this)."""
+    import tinyserve.engine.scheduler as sched_mod
+
+    monkeypatch.setattr(sched_mod, "sample", lambda *a, **k: model.cfg.eos_token_id)
+    p = SamplingParams(max_tokens=5, temperature=0, ignore_eos=ignore_eos)
+    sched = Scheduler(model, max_slots=1, max_len=64)
+    r = Request([464, 886], p)
+    sched.add(r)
+    sched.run_until_done()
+    if ignore_eos:
+        assert len(r.out) == 5 and r.finish_reason == "length"
+    else:
+        assert r.out == [] and r.finish_reason == "stop"

@@ -55,7 +55,7 @@ def generate(
     for _ in range(params.max_tokens):
         logits = model(feed[None], cache)[0, -1]
         tok = sample(logits, ids, params, g)
-        if tok == cfg.eos_token_id:
+        if tok == cfg.eos_token_id and not params.ignore_eos:
             finish = "stop"
             break
         out.append(tok)

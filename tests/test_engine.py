@@ -49,9 +49,7 @@ def workload(tokenizer):
         if i % 2:
             p = SamplingParams(max_tokens=mt, temperature=0)
         else:
-            p = SamplingParams(
-                max_tokens=mt, temperature=p.temperature, top_p=p.top_p, seed=p.seed
-            )
+            p = SamplingParams(max_tokens=mt, temperature=p.temperature, top_p=p.top_p, seed=p.seed)
         out.append((ids, p))
     return out
 

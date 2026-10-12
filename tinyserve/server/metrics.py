@@ -58,9 +58,7 @@ class Metrics:
             buckets=(1, 2, 3, 4, 6, 8, 12, 16, 24, 32),
             registry=r,
         )
-        self.tokens = Counter(
-            "tinyserve_generated_tokens", "Output tokens generated", registry=r
-        )
+        self.tokens = Counter("tinyserve_generated_tokens", "Output tokens generated", registry=r)
         self.requests = Counter(
             "tinyserve_requests", "Finished requests", ["finish_reason"], registry=r
         )

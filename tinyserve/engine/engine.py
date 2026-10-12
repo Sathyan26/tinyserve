@@ -40,8 +40,18 @@ class Engine:
         request_timeout_s: float | None = 120.0,
         decode: Callable[[list[int]], str] | None = None,
         idle_poll_s: float = 0.05,
+        mode: str = "continuous",
+        batch_wait_s: float = 0.2,
     ) -> None:
-        self.scheduler = Scheduler(model, max_slots, max_len, decode, keep_done=False)
+        self.scheduler = Scheduler(
+            model,
+            max_slots,
+            max_len,
+            decode,
+            keep_done=False,
+            mode=mode,
+            batch_wait_s=batch_wait_s,
+        )
         self.queue: queue.Queue[Request] = queue.Queue(maxsize=max_queue)
         self.request_timeout_s = request_timeout_s
         self.idle_poll_s = idle_poll_s
@@ -95,13 +105,26 @@ class Engine:
                     continue
             self._pull()
             try:
-                s.step()
+                if not s.step():
+                    # nothing decoded (e.g. static mode holding a partial batch): wait for
+                    # an arrival instead of spinning a core and starving the server thread
+                    self._wait_for_arrival(0.005)
             except Exception:
                 # one bad step must not kill the thread and hang every client
                 self.errors += 1
                 log.exception("engine step failed; failing in-flight requests")
                 s.fail_all("error")
         s.fail_all("cancelled")  # shutting down
+
+    def _wait_for_arrival(self, timeout: float) -> None:
+        s = self.scheduler
+        if len(s.waiting) < s.cache.num_free:
+            try:
+                s.waiting.append(self.queue.get(timeout=timeout))
+            except queue.Empty:
+                pass
+        else:
+            time.sleep(timeout)
 
     def _pull(self) -> None:
         """Move requests from the queue into the scheduler only as slots allow.

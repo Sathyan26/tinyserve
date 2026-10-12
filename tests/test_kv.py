@@ -22,18 +22,20 @@ def test_cache_returns_history_and_rejects_overflow():
 def test_cached_equals_uncached_greedy(model, tokenizer, prompt):
     ids = tokenizer.encode(prompt)
     p = SamplingParams(max_tokens=50, temperature=0)
-    assert generate(model, ids, p, use_cache=True).token_ids == generate(
-        model, ids, p, use_cache=False
-    ).token_ids
+    assert (
+        generate(model, ids, p, use_cache=True).token_ids
+        == generate(model, ids, p, use_cache=False).token_ids
+    )
 
 
 @pytest.mark.slow
 def test_cached_equals_uncached_sampled(model, tokenizer):
     ids = tokenizer.encode(PROMPTS[1])
     p = SamplingParams(max_tokens=50, temperature=0.9, top_p=0.95, seed=7)
-    assert generate(model, ids, p, use_cache=True).token_ids == generate(
-        model, ids, p, use_cache=False
-    ).token_ids
+    assert (
+        generate(model, ids, p, use_cache=True).token_ids
+        == generate(model, ids, p, use_cache=False).token_ids
+    )
 
 
 @pytest.mark.slow

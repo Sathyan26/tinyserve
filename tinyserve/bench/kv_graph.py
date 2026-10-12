@@ -107,7 +107,10 @@ def plot(data: dict, out: Path) -> None:
         ax.set_ylim(bottom=0)
     right.legend(loc="upper left")
     fig.text(
-        0.01, 0.01, footer("GPT-2 small", "fp32", f"median of {data['runs']}"), fontsize=8,
+        0.01,
+        0.01,
+        footer("GPT-2 small", "fp32", f"median of {data['runs']}"),
+        fontsize=8,
         color=INK_2,
     )
     fig.tight_layout(rect=(0, 0.04, 1, 0.95))

@@ -10,8 +10,12 @@ class ChatMessage(BaseModel):
     content: str
 
 
+class StreamOptions(BaseModel):
+    include_usage: bool = False  # OpenAI: send a final chunk carrying token usage
+
+
 class ChatCompletionRequest(BaseModel):
-    # unknown fields (stream_options, logprobs=False, user, ...) are ignored, like OpenAI
+    # unknown fields (logprobs=False, user, ...) are ignored, like OpenAI
     model_config = ConfigDict(extra="ignore")
 
     model: str = "gpt2"
@@ -23,10 +27,12 @@ class ChatCompletionRequest(BaseModel):
     stop: str | list[str] | None = None
     seed: int | None = None
     stream: bool = False
+    stream_options: StreamOptions | None = None
     n: int = Field(default=1, ge=1)
     # tinyserve extensions (OpenAI clients pass them via extra_body)
     top_k: int = Field(default=0, ge=0)
     repetition_penalty: float = Field(default=1.0, gt=0)
+    ignore_eos: bool = False  # benchmarks: no EOS, no default stop string; exact max_tokens
 
 
 class ResponseMessage(BaseModel):
@@ -72,3 +78,4 @@ class ChatCompletionChunk(BaseModel):
     created: int
     model: str
     choices: list[ChunkChoice]
+    usage: Usage | None = None

@@ -2,6 +2,13 @@
 
 Requests join between steps as soon as a slot is free and leave the moment they finish,
 so a short request never waits for a long one to end (unlike static batching).
+
+The same loop also runs the two baselines it is benchmarked against, so every mode shares
+the model code, the cache and the sampler; only the admission rule differs:
+  continuous  admit into any free slot between any two steps
+  static      admit a whole batch (max_slots requests, or whatever arrived within
+              batch_wait_s), then admit nobody until the entire batch has finished
+  serial      one request at a time (no batching at all)
 """
 
 import itertools
@@ -21,6 +28,8 @@ from tinyserve.engine.step import decode_step, prefill
 from tinyserve.model.gpt2 import GPT2
 
 _ids = itertools.count()
+
+MODES = ("continuous", "static", "serial")
 
 
 @dataclass(eq=False)
@@ -45,6 +54,7 @@ class Request:
     first_token_time: float | None = None
     finish_time: float | None = None
     admitted_step: int | None = None
+    finished_step: int | None = None
     _gen: torch.Generator | None = None
     _seen: Tensor | None = None
 
@@ -68,8 +78,14 @@ class Scheduler:
         max_len: int | None = None,
         decode: Callable[[list[int]], str] | None = None,
         keep_done: bool = True,
+        mode: str = "continuous",
+        batch_wait_s: float = 0.2,
     ) -> None:
+        if mode not in MODES:
+            raise ValueError(f"mode must be one of {MODES}")
         cfg = model.cfg
+        self.mode = mode
+        self.batch_wait_s = batch_wait_s  # static: how long a partial batch may wait
         self.model = model
         self.decode = decode
         self.max_len = min(max_len or cfg.n_ctx, cfg.n_ctx)
@@ -106,10 +122,14 @@ class Scheduler:
     def has_work(self) -> bool:
         return bool(self.waiting or self.running)
 
-    def step(self) -> None:
-        """REAP aborted requests, ADMIT waiting ones into free slots, DECODE one token for all."""
+    def step(self) -> bool:
+        """REAP aborted requests, ADMIT waiting ones, DECODE one token for all running.
+
+        Returns False when there was nothing to decode (lets the engine thread sleep).
+        """
         self._reap()
         self._admit()
+        did_decode = bool(self.running)
         if self.running:
             slots = torch.tensor([r.slot for r in self.running])
             last = torch.tensor([r.out[-1] for r in self.running])
@@ -121,6 +141,7 @@ class Scheduler:
                 self._accept(req, row)
             self._evict()
         self.steps += 1
+        return did_decode
 
     def run_until_done(self) -> list[Request]:
         while self.has_work:
@@ -148,8 +169,24 @@ class Scheduler:
             self._finish(req)
         self._evict()
 
+    def _admission_budget(self) -> int:
+        """How many waiting requests may be admitted right now, under this mode."""
+        if self.mode == "continuous":
+            return self.cache.num_free
+        if self.running:  # static and serial: never join a batch in flight
+            return 0
+        if self.mode == "serial":
+            return 1
+        full = len(self.waiting) >= self.cache.num_free
+        waited = self.waiting and (
+            time.perf_counter() - self.waiting[0].arrival_time >= self.batch_wait_s
+        )
+        return self.cache.num_free if (full or waited) else 0
+
     def _admit(self) -> None:
-        while self.waiting and self.cache.num_free:
+        budget = self._admission_budget()
+        while self.waiting and self.cache.num_free and budget > 0:
+            budget -= 1
             req = self.waiting.popleft()
             req.slot = self.cache.alloc()
             req.admitted_step = self.steps
@@ -170,7 +207,7 @@ class Scheduler:
         now = time.perf_counter()
         if req.first_token_time is None:
             req.first_token_time = now
-        if tok == self.model.cfg.eos_token_id:
+        if tok == self.model.cfg.eos_token_id and not req.params.ignore_eos:
             req.finish_reason = "stop"
         else:
             req.out.append(tok)
@@ -183,6 +220,7 @@ class Scheduler:
                 req.finish_reason = "length"
         if req.finished:
             req.finish_time = now
+            req.finished_step = self.steps
 
     def _evict(self) -> None:
         still = []

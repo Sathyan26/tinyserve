@@ -101,9 +101,9 @@ def create_app(engine: Engine, tokenizer: Tokenizer, model_name: str = "gpt2") -
         if body.n != 1:
             return reject(400, "n > 1 is not supported")
         prompt_ids = tokenizer.encode(gpt2_chat_prompt(body.messages))
-        stops = tuple([body.stop] if isinstance(body.stop, str) else body.stop or []) + (
-            GPT2_STOP,
-        )
+        stops = tuple([body.stop] if isinstance(body.stop, str) else body.stop or [])
+        if not body.ignore_eos:
+            stops += (GPT2_STOP,)
         room = engine.scheduler.max_len - len(prompt_ids)
         max_tokens = body.max_completion_tokens or body.max_tokens or min(DEFAULT_MAX_TOKENS, room)
         try:
@@ -115,6 +115,7 @@ def create_app(engine: Engine, tokenizer: Tokenizer, model_name: str = "gpt2") -
                 repetition_penalty=body.repetition_penalty,
                 stop=stops,
                 seed=body.seed,
+                ignore_eos=body.ignore_eos,
             )
             events, req = submit(engine, prompt_ids, params)
         except ValueError as e:
@@ -125,8 +126,9 @@ def create_app(engine: Engine, tokenizer: Tokenizer, model_name: str = "gpt2") -
         cid, created = f"chatcmpl-{uuid.uuid4().hex}", int(time.time())
         if body.stream:
             streamer = TextStreamer(tokenizer.decode, stops)
+            usage = body.stream_options is not None and body.stream_options.include_usage
             return StreamingResponse(
-                sse(events, req, streamer, cid, created, model_name),
+                sse(events, req, streamer, cid, created, model_name, usage),
                 media_type="text/event-stream",
                 headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
             )
@@ -207,6 +209,7 @@ async def sse(
     cid: str,
     created: int,
     model: str,
+    include_usage: bool = False,
 ) -> AsyncIterator[str]:
     def chunk(delta: Delta, finish: str | None = None) -> str:
         c = ChatCompletionChunk(
@@ -231,6 +234,18 @@ async def sse(
                 if text := streamer.finish():
                     yield chunk(Delta(content=text))
                 yield chunk(Delta(), finish)
+        if include_usage:  # OpenAI's shape: one extra chunk, empty choices, usage set
+            n_prompt, n_out = len(req.prompt_ids), len(req.out)
+            last = ChatCompletionChunk(
+                id=cid,
+                created=created,
+                model=model,
+                choices=[],
+                usage=Usage(
+                    prompt_tokens=n_prompt, completion_tokens=n_out, total_tokens=n_prompt + n_out
+                ),
+            )
+            yield f"data: {last.model_dump_json(exclude_none=True)}\n\n"
         yield "data: [DONE]\n\n"
     finally:
         # client went away (Starlette cancels this generator) or we finished: either way
@@ -251,6 +266,7 @@ def build_from_env() -> FastAPI:
         max_queue=int(os.environ.get("TINYSERVE_MAX_QUEUE", 64)),
         request_timeout_s=float(os.environ.get("TINYSERVE_TIMEOUT_S", 120)),
         decode=tokenizer.decode,
+        mode=os.environ.get("TINYSERVE_SCHEDULER_MODE", "continuous"),
     )
     return create_app(engine, tokenizer)
 

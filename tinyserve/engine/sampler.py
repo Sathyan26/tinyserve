@@ -19,6 +19,7 @@ class SamplingParams:
     repetition_penalty: float = 1.0  # 1.0 disables
     stop: tuple[str, ...] = field(default_factory=tuple)
     seed: int | None = None
+    ignore_eos: bool = False  # benchmarks: always produce exactly max_tokens (as vLLM)
 
     def __post_init__(self) -> None:
         if self.max_tokens < 1:

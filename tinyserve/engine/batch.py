@@ -78,7 +78,7 @@ def generate_batch(
                 nxt.append(cfg.eos_token_id)  # filler; its output is never read
                 continue
             tok = sample(logits[b], seen[b], plist[b], gens[b])
-            if tok == cfg.eos_token_id:
+            if tok == cfg.eos_token_id and not plist[b].ignore_eos:
                 done[b], finish[b] = True, "stop"
             else:
                 outs[b].append(tok)

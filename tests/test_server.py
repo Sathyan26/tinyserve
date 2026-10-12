@@ -106,9 +106,7 @@ def test_official_openai_client_streams(server):
     ids=["n", "temperature", "empty", "too-long"],
 )
 def test_bad_requests_get_openai_style_400(server, patch):
-    r = httpx.post(
-        f"{BASE}/v1/chat/completions", json={"messages": QUESTION, **patch}, timeout=30
-    )
+    r = httpx.post(f"{BASE}/v1/chat/completions", json={"messages": QUESTION, **patch}, timeout=30)
     assert r.status_code == 400
     assert r.json()["error"]["type"] == "invalid_request_error"
 
