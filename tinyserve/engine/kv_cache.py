@@ -105,6 +105,9 @@ class SlotView:
         self.slots = slots
         self.T = T
         self.start = cache.lengths[slots].clone()  # [B] where each row's new tokens go
+        # index tensors on the cache's device, so GPU writes don't round-trip via the host
+        self._slots_d = slots.to(cache.k.device)
+        self._start_d = self.start.to(cache.k.device)
         self.L = int(self.start.max()) + T  # keys to attend over (longest row)
         if self.L > cache.max_len:
             raise RuntimeError(f"KV slot overflow: {self.L} > max_len {cache.max_len}")
@@ -122,11 +125,11 @@ class SlotView:
         return torch.arange(self.L)[None] < (self.start + self.T)[:, None]
 
     def update(self, layer: int, k: Tensor, v: Tensor) -> tuple[Tensor, Tensor]:
-        c, s = self.cache, self.slots
+        c, s = self.cache, self._slots_d
         if self.T == 1:
             # advanced indexing: row b writes position start[b] of slot s[b]
-            c.k[layer, s, :, self.start] = k[:, :, 0]
-            c.v[layer, s, :, self.start] = v[:, :, 0]
+            c.k[layer, s, :, self._start_d] = k[:, :, 0]
+            c.v[layer, s, :, self._start_d] = v[:, :, 0]
         else:
             a = int(self.start[0])
             c.k[layer, s[0], :, a : a + self.T] = k[0]

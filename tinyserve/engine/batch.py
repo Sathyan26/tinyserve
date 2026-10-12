@@ -56,7 +56,13 @@ def generate_batch(
 
     max_new = max(p.max_tokens for p in plist)
     cache = KVCache(
-        cfg.n_layer, B, cfg.n_kv_head, cfg.head_dim, ids.size(1) + max_new, dtype=model.dtype
+        cfg.n_layer,
+        B,
+        cfg.n_kv_head,
+        cfg.head_dim,
+        ids.size(1) + max_new,
+        dtype=model.dtype,
+        device=model.device,
     )
     gens = [make_generator(p) for p in plist]
     seen = [torch.tensor(p) for p in prompts]  # real tokens only: padding never penalised
@@ -67,7 +73,9 @@ def generate_batch(
 
     feed = ids
     for step in range(max_new):
-        logits = model(feed, cache, positions, key_mask)[:, -1]
+        dev = model.device
+        logits = model(feed.to(dev), cache, positions.to(dev), key_mask.to(dev))[:, -1]
+        logits = logits.float().cpu()
         if step > 0:
             stats.steps += 1
             stats.row_steps += B

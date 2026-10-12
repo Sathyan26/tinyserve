@@ -1,0 +1,3 @@
+{%- set names = {'system': 'System', 'user': 'User', 'assistant': 'Assistant'} -%}
+{%- for m in messages -%}{{ names[m['role']] }}: {{ m['content'] }}
+{% endfor -%}Assistant:

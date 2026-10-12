@@ -140,6 +140,10 @@ class GPT2(nn.Module):
         """Activation dtype; KV caches are allocated in it (int8 models still compute in fp32)."""
         return self.wte.weight.dtype
 
+    @property
+    def device(self) -> torch.device:
+        return self.wte.weight.device
+
     @classmethod
     def from_pretrained(cls, folder: Path) -> "GPT2":
         model = cls(GPT2Config.from_json(folder / "config.json"))

@@ -151,6 +151,10 @@ class Qwen2(nn.Module):
     def dtype(self) -> torch.dtype:
         return self.embed_tokens.weight.dtype
 
+    @property
+    def device(self) -> torch.device:
+        return self.embed_tokens.weight.device
+
     def forward(
         self,
         input_ids: Tensor,

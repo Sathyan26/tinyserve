@@ -1,3 +1,5 @@
+import pytest
+
 from tinyserve.server.app import gpt2_chat_prompt
 from tinyserve.server.detok import REPLACEMENT, TextStreamer, stop_prefix_len
 from tinyserve.server.schemas import ChatMessage
@@ -40,3 +42,19 @@ def test_stop_prefix_len():
 def test_chat_template():
     msgs = [ChatMessage(role="system", content="Be brief."), ChatMessage(role="user", content="Hi")]
     assert gpt2_chat_prompt(msgs) == "System: Be brief.\nUser: Hi\nAssistant:"
+
+
+def test_vllm_gpt2_template_matches_tinyserve():
+    """The ceiling benchmark must send vLLM byte-identical prompts."""
+    from pathlib import Path
+
+    jinja2 = pytest.importorskip("jinja2")
+    src = (Path(__file__).parents[1] / "templates" / "gpt2_chat.jinja").read_text()
+    msgs = [
+        {"role": "system", "content": "Be brief."},
+        {"role": "user", "content": "Hi"},
+        {"role": "assistant", "content": "Hello"},
+        {"role": "user", "content": "Bye"},
+    ]
+    rendered = jinja2.Template(src).render(messages=msgs)
+    assert rendered == gpt2_chat_prompt([ChatMessage(**m) for m in msgs])

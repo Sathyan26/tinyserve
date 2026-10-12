@@ -90,7 +90,13 @@ class Scheduler:
         self.decode = decode
         self.max_len = min(max_len or cfg.n_ctx, cfg.n_ctx)
         self.cache = SlotKVCache(
-            cfg.n_layer, max_slots, cfg.n_kv_head, cfg.head_dim, self.max_len, dtype=model.dtype
+            cfg.n_layer,
+            max_slots,
+            cfg.n_kv_head,
+            cfg.head_dim,
+            self.max_len,
+            dtype=model.dtype,
+            device=model.device,
         )
         self.waiting: deque[Request] = deque()
         self.running: list[Request] = []

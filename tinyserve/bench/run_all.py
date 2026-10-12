@@ -3,8 +3,11 @@
     uv run python -m tinyserve.bench.run_all                 # measure everything (slow)
     uv run python -m tinyserve.bench.run_all --plot-only     # redraw from saved results
     uv run python -m tinyserve.bench.run_all --only serving --quick   # pipeline smoke test
+    python -m tinyserve.bench.run_all --device cuda --model qwen2.5-0.5b --dtype float16
 
 Raw results go to docs/results/<device>/<model>/, graphs to docs/img/.
+The KV-cache and quantization graphs are CPU/GPT-2 experiments; serving runs on any
+device and model.
 """
 
 import argparse
@@ -16,14 +19,18 @@ from pathlib import Path
 import torch
 
 from tinyserve.bench import serving
+from tinyserve.model.registry import MODELS
 
 ROOT = Path(__file__).resolve().parents[2]
 STEPS = ("kv", "quant", "serving")
+DTYPES = {"float32": torch.float32, "float16": torch.float16, "bfloat16": torch.bfloat16}
 
 
 def main() -> None:
     ap = argparse.ArgumentParser(description="Regenerate every README graph.")
     ap.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
+    ap.add_argument("--model", default="gpt2", choices=sorted(MODELS))
+    ap.add_argument("--dtype", default="float32", choices=sorted(DTYPES))
     ap.add_argument("--only", choices=STEPS, action="append", help="run only these steps")
     ap.add_argument("--plot-only", action="store_true", help="redraw from saved JSON")
     ap.add_argument("--quick", action="store_true", help="tiny run to test the pipeline")
@@ -33,32 +40,41 @@ def main() -> None:
     ap.add_argument("--slots", type=int, default=8)
     args = ap.parse_args()
     steps = args.only or list(STEPS)
-    results = ROOT / "docs" / "results" / args.device / "gpt2"
+    results = ROOT / "docs" / "results" / args.device / args.model
     img = ROOT / "docs" / "img"
 
-    # kv and quant have their own scripts; run them as modules so each stays standalone
-    for step, module in (("kv", "kv_graph"), ("quant", "quant_graph")):
-        if step in steps:
-            extra = ["--plot-only"] if args.plot_only else []
-            subprocess.run([sys.executable, "-m", f"tinyserve.bench.{module}", *extra], check=True)
+    # CPU/GPT-2 experiments with their own scripts; run as modules so each stays standalone
+    if args.device == "cpu" and args.model == "gpt2":
+        for step, module in (("kv", "kv_graph"), ("quant", "quant_graph")):
+            if step in steps:
+                extra = ["--plot-only"] if args.plot_only else []
+                cmd = [sys.executable, "-m", f"tinyserve.bench.{module}", *extra]
+                subprocess.run(cmd, check=True)
 
     if "serving" in steps:
+        tag = f"{args.device}_{args.model}"
         out_json = results / ("serving_quick.json" if args.quick else "serving.json")
-        out_png = img / ("headline_quick.png" if args.quick else "headline.png")
+        out_png = img / (f"headline_{tag}_quick.png" if args.quick else f"headline_{tag}.png")
         if args.plot_only:
             data = json.loads(out_json.read_text())
         else:
-            from tinyserve.model.gpt2 import GPT2
-            from tinyserve.model.tokenizer import Tokenizer
-            from tinyserve.model.weights import download
+            from tinyserve.model.registry import load
 
-            folder = download()
-            model = GPT2.from_pretrained(folder).to(args.device)
+            model, tokenizer, _ = load(args.model, DTYPES[args.dtype])
+            model = model.to(args.device)  # type: ignore[attr-defined]
             rates = args.rates or ([0.5] if args.quick else serving.DEFAULT_RATES[args.device])
             runs = args.runs or (1 if args.quick else 3 if args.device == "cpu" else 5)
             n = 8 if args.quick else args.n
             data = serving.measure(
-                model, Tokenizer(folder), out_json, args.device, rates, runs, n, args.slots
+                model,
+                tokenizer,
+                out_json,
+                args.device,
+                rates,
+                runs,
+                n,
+                args.slots,
+                model_name=args.model,
             )
         serving.plot(data, out_png)
 

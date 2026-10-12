@@ -18,7 +18,7 @@ from tinyserve.bench.loadgen import default_workload, run_load, summarize
 from tinyserve.bench.plots import INK_2, SERIES, footer, hardware, power_plan, style
 from tinyserve.bench.serve import serve_in_thread
 from tinyserve.engine.engine import Engine
-from tinyserve.model.gpt2 import GPT2
+from tinyserve.model.registry import MODELS, LanguageModel
 from tinyserve.server.app import create_app
 
 MODES = ("serial", "static", "continuous")
@@ -38,7 +38,7 @@ def _wait_idle(engine: Engine, timeout: float = 600) -> None:
 
 
 def measure(
-    model: GPT2,
+    model: LanguageModel,
     tokenizer,
     out: Path,
     device: str,
@@ -48,11 +48,12 @@ def measure(
     slots: int,
     modes: tuple[str, ...] = MODES,
     port: int = 8790,
+    model_name: str = "gpt2",
 ) -> dict:
     items = default_workload(max(n, 10))
     data = {
         "config": {
-            "model": "gpt2",
+            "model": model_name,
             "device": device,
             "hardware": hardware(),
             "power_plan": power_plan(),
@@ -68,7 +69,7 @@ def measure(
     }
     for mode in modes:
         engine = Engine(
-            model,
+            model,  # type: ignore[arg-type]
             max_slots=slots,
             max_len=1024,
             max_queue=10_000,
@@ -76,7 +77,8 @@ def measure(
             decode=tokenizer.decode,
             mode=mode,
         )
-        with serve_in_thread(create_app(engine, tokenizer), port=port) as url:
+        app = create_app(engine, tokenizer, model_name, MODELS[model_name].chat)
+        with serve_in_thread(app, port=port) as url:
             asyncio.run(run_load(url, items[:10], rate=50))  # warmup
             _wait_idle(engine)
             for rate in rates:
@@ -185,7 +187,7 @@ def plot(data: dict, out: Path) -> None:
         fontweight="bold",
     )
     note = footer(
-        f"GPT-2 small ({cfg['dtype']})",
+        f"{cfg.get('model', 'gpt2')} ({cfg['dtype']})",
         f"{cfg['slots']} slots, {cfg['requests_per_run']} req/run",
         f"median, min-max of {cfg['runs']} runs",
     )

@@ -47,13 +47,15 @@ def generate(
     cache = None
     if use_cache:
         max_len = len(prompt_ids) + params.max_tokens
-        cache = KVCache(cfg.n_layer, 1, cfg.n_kv_head, cfg.head_dim, max_len, dtype=model.dtype)
+        cache = KVCache(
+            cfg.n_layer, 1, cfg.n_kv_head, cfg.head_dim, max_len, model.dtype, model.device
+        )
 
     out: list[int] = []
     finish = "length"
     feed: Tensor = ids  # prefill feeds the whole prompt; decode feeds only the new token
     for _ in range(params.max_tokens):
-        logits = model(feed[None], cache)[0, -1]
+        logits = model(feed[None].to(model.device), cache)[0, -1].float().cpu()
         tok = sample(logits, ids, params, g)
         if tok in cfg.eos_token_ids and not params.ignore_eos:
             finish = "stop"
