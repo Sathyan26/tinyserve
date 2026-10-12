@@ -1,0 +1,34 @@
+# Engineering log
+
+One entry per problem: date, symptom, hypotheses, what fixed it. Week 5's debugging story comes from here.
+
+## 2026-10-11 — Day 0
+- **Symptom:** `uv init --package` created a `src/` layout and ran `git init` automatically.
+- **Fix:** flattened to the spec layout (`tinyserve/` at repo root) via `[tool.uv.build-backend] module-root = ""`.
+
+## 2026-10-11 — Step 1.4 logit equivalence
+- **Result:** all 5 prompts within 1e-4 of HF on first run; max |diff| = 6.1e-05 on "The capital of France is".
+- **Counterfactual:** swapping tanh-GELU for exact GELU raises max |diff| to 7.5e-02 (~1000x worse), so the test would catch it.
+- **Note (weights):** checkpoint has 137.0M values vs 124M params: the extra 12.6M are 12 cached 1024x1024 causal masks (`h.N.attn.bias`), skipped by the loader.
+
+## 2026-10-11 — Steps 1.5–1.7 sampler, KV cache, first graph
+- **Result:** greedy output token-identical to HF `generate()` on 5 prompts (also with repetition_penalty=1.3); cached == uncached for greedy and seeded sampling; cached step logits match full forward within 1e-4.
+- **Graph:** 512 tokens: 194.8 s uncached vs 21.0 s cached (9.3x). Cached per-token cost flat at ~41 ms; uncached grows 116 -> 381 ms.
+- **Surprise:** cached cost at 32 tokens is 57 ms/token, higher than at 512. Fixed costs (prefill, cache allocation, first-step overhead) are spread over only 32 tokens.
+- **Surprise:** uncached per-token cost is not a clean straight line at short lengths. On CPU a forward pass has a large fixed cost (reading all 124M weights from memory) that dominates until the sequence gets long.
+
+## 2026-10-11 — Steps 2.1–2.2 static batching
+- **Result:** batch-invariance passes first run at batch sizes 1, 2, 3, 8 (8 prompts, 1 to 40+ tokens, 30 greedy tokens), and with per-row seeds/temperatures/max_tokens.
+- **Counterfactual 1:** positions from the column index (`arange`) instead of `mask.cumsum - 1` -> 2 of 3 padded rows produce different tokens. The test catches the classic bug.
+- **Surprise (counterfactual 2):** removing the NaN guard produced *no* NaNs. torch 2.14 SDPA returns zeros for a fully masked query row; a hand-written `masked_fill(-inf).softmax()` returns NaN. Guard kept for custom attention (Qwen port), docstring corrected. Good design-doc item: the guide's warning was true for older PyTorch / manual attention, not for current SDPA.
+
+## 2026-10-12 — Steps 2.3–2.4 slot KV cache, per-sequence decode
+- **Design change:** model now calls `cache.advance(T)` instead of `cache.length += T`; with slots, "length" differs per row, so each cache type owns what advancing means.
+- **Result:** one slot matches `generate()`; slots 0 and 5 holding 1-token and ~15-token prompts decoded together match each run alone.
+- **Counterfactual:** drop the per-row key mask in decode -> the short row ("Hello") produces wrong tokens, the long row stays correct. The short row was attending to the unused tail of its slot (zeros / stale keys). Only the row shorter than L is hurt, which is why a test with equal lengths would never catch it.
+- **Cost noted for the design doc:** each layer gathers `k[layer, slots, :, :L]`, which is a copy of every running sequence's history per layer per step. Paged attention kernels read blocks in place instead.
+
+## 2026-10-12 — Steps 2.5–2.6 scheduler v1 (Week 2 done)
+- **Result:** 20 requests (max_tokens 5–80, mixed prompts), max_slots=4: every output equals `generate()` alone, greedy and seeded (mixed temperature/top_p/top_k/repetition penalty). >= 10 requests joined mid-run; all 4 slots returned at the end. Stop-string request leaves early and frees its slot.
+- **Counterfactual:** `alloc()` without `lengths[slot] = 0` -> crash "KV slot overflow: 274 > max_len 256" because reused slots kept growing. The overflow check turned a silent wrong-output bug into a loud one.
+- **First look, NOT a benchmark** (one run, all 20 arrive at t=0, laptop CPU): continuous 260 steps, 15.9 s, 58.3 tok/s, mean batch 3.49; static (groups of 4) 344 steps, 18.6 s, 49.7 tok/s, 34% of computed rows wasted on finished sequences. Proper Poisson-arrival benchmark comes in week 4.

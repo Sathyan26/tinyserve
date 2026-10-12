@@ -1,0 +1,62 @@
+[project]
+name = "tinyserve"
+version = "0.1.0"
+description = "An LLM inference engine and OpenAI-compatible server written from scratch in PyTorch"
+readme = "README.md"
+authors = [
+    { name = "Sathyn Asokan Geethpriya", email = "agsathyan26@gmail.com" }
+]
+requires-python = ">=3.12"
+dependencies = [
+    "fastapi>=0.143.0",
+    "huggingface-hub>=2.2.0",
+    "numpy>=2.5.4",
+    "prometheus-client>=0.26.0",
+    "safetensors>=0.8.0",
+    "tokenizers>=0.23.3",
+    "torch>=2.14.1",
+    "uvicorn[standard]>=0.54.0",
+]
+
+[project.scripts]
+tinyserve = "tinyserve:main"
+
+[build-system]
+requires = ["uv_build>=0.11.28,<0.12.0"]
+build-backend = "uv_build"
+
+[tool.uv.build-backend]
+# Package lives at ./tinyserve (spec layout), not ./src/tinyserve
+module-root = ""
+
+# Linux CI would otherwise pull the 2 GB CUDA build of torch from PyPI.
+# Windows/macOS PyPI wheels are already CPU-only, so only Linux uses this index.
+[[tool.uv.index]]
+name = "pytorch-cpu"
+url = "https://download.pytorch.org/whl/cpu"
+explicit = true
+
+[tool.uv.sources]
+torch = [{ index = "pytorch-cpu", marker = "sys_platform == 'linux'" }]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = ["slow: loads model weights (deselect with -m 'not slow')"]
+
+[dependency-groups]
+dev = [
+    "httpx>=0.28.1",
+    "matplotlib>=3.11.2",
+    "mypy>=2.4.0",
+    "openai>=3.29.0",
+    "pytest>=9.1.1",
+    "ruff>=0.17.0",
+    "transformers>=5.19.0",
+]
