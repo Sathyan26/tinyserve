@@ -13,7 +13,8 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
-from fastapi.responses import JSONResponse, StreamingResponse
+from fastapi.responses import JSONResponse, Response, StreamingResponse
+from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
 
 from tinyserve.engine.engine import Engine, QueueFull
 from tinyserve.engine.generate import find_stop
@@ -21,6 +22,7 @@ from tinyserve.engine.sampler import SamplingParams
 from tinyserve.engine.scheduler import Request as EngineRequest
 from tinyserve.model.tokenizer import Tokenizer
 from tinyserve.server.detok import TextStreamer
+from tinyserve.server.metrics import Metrics
 from tinyserve.server.schemas import (
     ChatCompletion,
     ChatCompletionChunk,
@@ -60,11 +62,24 @@ def create_app(engine: Engine, tokenizer: Tokenizer, model_name: str = "gpt2") -
         engine.stop()
 
     app = FastAPI(title="tinyserve", lifespan=lifespan)
+    metrics = Metrics(engine)
+
+    @app.get("/metrics")
+    async def prometheus_metrics():
+        return Response(generate_latest(metrics.registry), media_type=CONTENT_TYPE_LATEST)
+
+    def reject(status: int, message: str) -> JSONResponse:
+        """Every refused request goes through here, so the metric cannot miss one."""
+        if status == 429:
+            metrics.rejected.labels("queue_full").inc()
+            return openai_error(429, message, "rate_limit_error", {"Retry-After": "1"})
+        metrics.rejected.labels("invalid").inc()
+        return openai_error(status, message, "invalid_request_error")
 
     @app.exception_handler(RequestValidationError)
     async def bad_request(_: Request, exc: RequestValidationError):
         msg = "; ".join(f"{'.'.join(map(str, e['loc'][1:]))}: {e['msg']}" for e in exc.errors())
-        return openai_error(400, msg, "invalid_request_error")
+        return reject(400, msg)
 
     @app.get("/health")
     async def health():
@@ -84,7 +99,7 @@ def create_app(engine: Engine, tokenizer: Tokenizer, model_name: str = "gpt2") -
     @app.post("/v1/chat/completions")
     async def chat_completions(body: ChatCompletionRequest):
         if body.n != 1:
-            return openai_error(400, "n > 1 is not supported", "invalid_request_error")
+            return reject(400, "n > 1 is not supported")
         prompt_ids = tokenizer.encode(gpt2_chat_prompt(body.messages))
         stops = tuple([body.stop] if isinstance(body.stop, str) else body.stop or []) + (
             GPT2_STOP,
@@ -103,9 +118,9 @@ def create_app(engine: Engine, tokenizer: Tokenizer, model_name: str = "gpt2") -
             )
             events, req = submit(engine, prompt_ids, params)
         except ValueError as e:
-            return openai_error(400, str(e), "invalid_request_error")
+            return reject(400, str(e))
         except QueueFull as e:
-            return openai_error(429, str(e), "rate_limit_error", {"Retry-After": "1"})
+            return reject(429, str(e))
 
         cid, created = f"chatcmpl-{uuid.uuid4().hex}", int(time.time())
         if body.stream:

@@ -134,6 +134,43 @@ def test_client_disconnect_cancels_generation(server):
         time.sleep(0.05)
 
 
+def metric(text: str, name: str) -> float:
+    """Value of one sample line in Prometheus text format (0 if absent)."""
+    for line in text.splitlines():
+        sample, _, value = line.rpartition(" ")
+        if sample == name:
+            return float(value)
+    return 0.0
+
+
+@pytest.mark.slow
+def test_metrics_endpoint(server):
+    before = httpx.get(f"{BASE}/metrics").text
+    for _ in range(2):
+        httpx.post(
+            f"{BASE}/v1/chat/completions",
+            json={"messages": QUESTION, "max_tokens": 8, "temperature": 0},
+            timeout=60,
+        )
+    httpx.post(f"{BASE}/v1/chat/completions", json={"messages": QUESTION, "n": 2})  # a 400
+    r = httpx.get(f"{BASE}/metrics")
+    assert r.status_code == 200 and r.headers["content-type"].startswith("text/plain")
+    after = r.text
+
+    def grew(name: str) -> float:
+        return metric(after, name) - metric(before, name)
+
+    assert grew("tinyserve_ttft_seconds_count") == 2
+    assert grew("tinyserve_e2e_latency_seconds_count") == 2
+    assert grew("tinyserve_tpot_seconds_count") == 2
+    assert grew("tinyserve_generated_tokens_total") >= 2
+    assert grew('tinyserve_rejected_requests_total{reason="invalid"}') == 1
+    assert grew("tinyserve_decode_batch_size_count") >= 7  # >= 7 decode steps per request
+    for gauge in ("tinyserve_queue_depth", "tinyserve_batch_size", "tinyserve_free_slots"):
+        assert gauge in after
+    assert metric(after, "tinyserve_free_slots") == 4  # idle again
+
+
 def test_queue_full_returns_429(model, tokenizer):
     # never started, so the queue stays full
     engine = Engine(model, max_slots=1, max_queue=1, decode=tokenizer.decode)

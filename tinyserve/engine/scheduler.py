@@ -30,7 +30,8 @@ class Request:
     # called with (token_id, None) per token, then (None, finish_reason) once, from the
     # engine thread; callers must hop to their own thread/loop before touching shared state
     on_token: Callable[[int | None, str | None], None] | None = None
-    deadline: float | None = None  # time.monotonic() after which the request is dropped
+    # perf_counter, not monotonic: monotonic() ticks only every 15 ms on Windows
+    deadline: float | None = None  # time.perf_counter() after which the request is dropped
     id: int = field(default_factory=lambda: next(_ids))
     # set from any thread (e.g. the client disconnected); the scheduler drops it between steps
     cancelled: threading.Event = field(default_factory=threading.Event)
@@ -40,7 +41,7 @@ class Request:
     out: list[int] = field(default_factory=list)
     finish_reason: str | None = None  # length | stop | cancelled | timeout | error
     result: GenerationResult | None = None
-    arrival_time: float = field(default_factory=time.monotonic)
+    arrival_time: float = field(default_factory=time.perf_counter)
     first_token_time: float | None = None
     finish_time: float | None = None
     admitted_step: int | None = None
@@ -79,6 +80,9 @@ class Scheduler:
         self.done: list[Request] = []
         self.steps = 0
         self.batch_sizes: deque[int] = deque(maxlen=10_000)  # recent decode batch sizes
+        # optional hooks (metrics); called on the engine thread
+        self.on_step: Callable[[int], None] | None = None  # decode batch size
+        self.on_finish: Callable[[Request], None] | None = None
 
     def validate(self, req: Request) -> None:
         """Raise ValueError for a request that can never run. Safe to call from any thread."""
@@ -109,6 +113,8 @@ class Scheduler:
             last = torch.tensor([r.out[-1] for r in self.running])
             logits = decode_step(self.model, self.cache, slots, last)
             self.batch_sizes.append(len(self.running))
+            if self.on_step:
+                self.on_step(len(self.running))
             for req, row in zip(self.running, logits, strict=True):
                 self._accept(req, row)
             self._evict()
@@ -124,12 +130,12 @@ class Scheduler:
         for req in [*self.running, *self.waiting]:
             if not req.finished:
                 req.finish_reason = reason
-                req.finish_time = time.monotonic()
+                req.finish_time = time.perf_counter()
         self.waiting.clear()
         self._evict()
 
     def _reap(self) -> None:
-        now = time.monotonic()
+        now = time.perf_counter()
         for req in [*self.running, *self.waiting]:
             if not req.finished and (reason := req.abort_reason(now)):
                 req.finish_reason = reason
@@ -159,7 +165,7 @@ class Scheduler:
         """
         assert req._gen is not None and req._seen is not None
         tok = sample(logits, req._seen, req.params, req._gen)
-        now = time.monotonic()
+        now = time.perf_counter()
         if req.first_token_time is None:
             req.first_token_time = now
         if tok == self.model.cfg.eos_token_id:
@@ -192,5 +198,7 @@ class Scheduler:
         req.result = finalize(req.out, req.finish_reason or "error", req.params, self.decode)
         if req.on_token:
             req.on_token(None, req.finish_reason)
+        if self.on_finish:
+            self.on_finish(req)
         if self.keep_done:
             self.done.append(req)

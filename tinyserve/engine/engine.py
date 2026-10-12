@@ -55,7 +55,7 @@ class Engine:
         """Validate and enqueue. Raises ValueError (bad request) or QueueFull (overloaded)."""
         self.scheduler.validate(req)  # reads only immutable config: safe off-thread
         if req.deadline is None and self.request_timeout_s is not None:
-            req.deadline = time.monotonic() + self.request_timeout_s
+            req.deadline = time.perf_counter() + self.request_timeout_s
         try:
             self.queue.put_nowait(req)
         except queue.Full:
