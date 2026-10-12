@@ -52,3 +52,19 @@ One entry per problem: date, symptom, hypotheses, what fixed it. Week 5's debugg
 - **Bug found by the test:** the `n > 1` check returned 400 *before* the code that counted rejections, so that 400 was invisible in metrics. Fixed by routing every refusal through one `reject()` function.
 - **Bug found by reading the output:** latency sums came out as 14.267000000000735, suspiciously round. On Windows `time.monotonic()` is GetTickCount64 with **15.6 ms resolution** (measured: 15.000 ms tick) vs `perf_counter` 0.2 us. Per-token times are 40-120 ms, so monotonic would have quantised TPOT by 15-40% and corrupted every week-4 benchmark. Switched engine timestamps and deadlines to `perf_counter`. Good interview story: a measurement bug caught before it produced numbers.
 - **8 concurrent requests, 4 slots (one run, CPU):** mean TTFT ~1.8 s (half the requests queued for a slot), mean TPOT ~0.13 s/token at batch 4 vs ~0.08 single — per-step cost grows with batch size on CPU, but 4 tokens per step still beats 1.
+
+## 2026-10-12 — Step 4.1 quantization (fp16, bf16, int8 weight-only)
+- **Measured (CPU, GPT-2 small, 5 prompts, greedy 64 tokens):**
+
+  | dtype | weights | KL vs fp32 | top-1 agree | greedy identical | ms/token |
+  |---|---|---|---|---|---|
+  | fp32 | 498 MB | 0 | 100% | 64/64 | 55.8 |
+  | fp16 | 249 MB | 0.00014 | 99.3% | 64/64 | 35.2 |
+  | bf16 | 249 MB | 0.0119 | 93.6% | 12/64 | 37.8 |
+  | int8 | 243 MB | 0.0015 | 98.5% | 64/64 | 103.4 |
+
+- **Surprise 1:** bf16 is ~85x worse than fp16 on KL and diverges after 12 greedy tokens. Same 16 bits, but bf16 keeps 8 exponent bits and only 7 mantissa bits (~2-3 significant digits) vs fp16's 10. GPT-2 activations fit fp16's range, so the extra range buys nothing and the lost precision costs a lot. The guide assumed fp16 would be unusable on CPU; on torch 2.14 it is the fastest option.
+- **Surprise 2:** int8 is 1.9x SLOWER than fp32. Plain PyTorch has no int8 x float matmul, so every forward widens 85M int8 weights back to fp32. It saves memory, not time. A fused int8 kernel (GPU, or torch._int_mm) is what would make it fast.
+- **Why int8 is only 49% of fp32, not 25%:** the tied 38.6M-parameter embedding/head (154 MB fp32) is deliberately left unquantized and is now the biggest single tensor.
+- **Unexplained, noted:** int8 max |logit diff| is 9.3 while KL stays tiny. The big differences must be on low-probability tokens or one position (GPT-2 has very large activations at position 0). Not investigated yet; check in 4.2 or experiment 4.
+- **Fix needed along the way:** KV caches were always fp32; a bf16/fp16 model then fed fp32 keys into SDPA next to bf16 queries. Caches now take `model.dtype`.

@@ -135,6 +135,11 @@ class GPT2(nn.Module):
         # output head is tied to the token embedding: no separate lm_head weight exists
         return self.ln_f(x) @ self.wte.weight.T
 
+    @property
+    def dtype(self) -> torch.dtype:
+        """Activation dtype; KV caches are allocated in it (int8 models still compute in fp32)."""
+        return self.wte.weight.dtype
+
     @classmethod
     def from_pretrained(cls, folder: Path) -> "GPT2":
         model = cls(GPT2Config.from_json(folder / "config.json"))

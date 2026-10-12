@@ -55,7 +55,9 @@ def generate_batch(
     positions = (key_mask.long().cumsum(-1) - 1).clamp(min=0)
 
     max_new = max(p.max_tokens for p in plist)
-    cache = KVCache(cfg.n_layer, B, cfg.n_head, cfg.head_dim, ids.size(1) + max_new)
+    cache = KVCache(
+        cfg.n_layer, B, cfg.n_head, cfg.head_dim, ids.size(1) + max_new, dtype=model.dtype
+    )
     gens = [make_generator(p) for p in plist]
     seen = [torch.tensor(p) for p in prompts]  # real tokens only: padding never penalised
     outs: list[list[int]] = [[] for _ in range(B)]

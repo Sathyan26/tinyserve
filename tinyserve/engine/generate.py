@@ -47,7 +47,7 @@ def generate(
     cache = None
     if use_cache:
         max_len = len(prompt_ids) + params.max_tokens
-        cache = KVCache(cfg.n_layer, 1, cfg.n_head, cfg.head_dim, max_len)
+        cache = KVCache(cfg.n_layer, 1, cfg.n_head, cfg.head_dim, max_len, dtype=model.dtype)
 
     out: list[int] = []
     finish = "length"

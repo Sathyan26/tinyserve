@@ -73,7 +73,9 @@ class Scheduler:
         self.model = model
         self.decode = decode
         self.max_len = min(max_len or cfg.n_ctx, cfg.n_ctx)
-        self.cache = SlotKVCache(cfg.n_layer, max_slots, cfg.n_head, cfg.head_dim, self.max_len)
+        self.cache = SlotKVCache(
+            cfg.n_layer, max_slots, cfg.n_head, cfg.head_dim, self.max_len, dtype=model.dtype
+        )
         self.waiting: deque[Request] = deque()
         self.running: list[Request] = []
         self.keep_done = keep_done  # a long-lived server must not keep every request forever
