@@ -5,6 +5,7 @@ so a short request never waits for a long one to end (unlike static batching).
 """
 
 import itertools
+import threading
 import time
 from collections import deque
 from collections.abc import Callable
@@ -26,14 +27,18 @@ _ids = itertools.count()
 class Request:
     prompt_ids: list[int]
     params: SamplingParams
-    # called with (token_id or None, finish_reason or None) from the engine thread
+    # called with (token_id, None) per token, then (None, finish_reason) once, from the
+    # engine thread; callers must hop to their own thread/loop before touching shared state
     on_token: Callable[[int | None, str | None], None] | None = None
+    deadline: float | None = None  # time.monotonic() after which the request is dropped
     id: int = field(default_factory=lambda: next(_ids))
+    # set from any thread (e.g. the client disconnected); the scheduler drops it between steps
+    cancelled: threading.Event = field(default_factory=threading.Event)
 
     # filled in by the scheduler
     slot: int | None = None
     out: list[int] = field(default_factory=list)
-    finish_reason: str | None = None
+    finish_reason: str | None = None  # length | stop | cancelled | timeout | error
     result: GenerationResult | None = None
     arrival_time: float = field(default_factory=time.monotonic)
     first_token_time: float | None = None
@@ -46,6 +51,13 @@ class Request:
     def finished(self) -> bool:
         return self.finish_reason is not None
 
+    def abort_reason(self, now: float) -> str | None:
+        if self.cancelled.is_set():
+            return "cancelled"
+        if self.deadline is not None and now > self.deadline:
+            return "timeout"
+        return None
+
 
 class Scheduler:
     def __init__(
@@ -54,6 +66,7 @@ class Scheduler:
         max_slots: int = 8,
         max_len: int | None = None,
         decode: Callable[[list[int]], str] | None = None,
+        keep_done: bool = True,
     ) -> None:
         cfg = model.cfg
         self.model = model
@@ -62,15 +75,25 @@ class Scheduler:
         self.cache = SlotKVCache(cfg.n_layer, max_slots, cfg.n_head, cfg.head_dim, self.max_len)
         self.waiting: deque[Request] = deque()
         self.running: list[Request] = []
+        self.keep_done = keep_done  # a long-lived server must not keep every request forever
         self.done: list[Request] = []
         self.steps = 0
-        self.batch_sizes: list[int] = []  # decode batch size per step, for metrics
+        self.batch_sizes: deque[int] = deque(maxlen=10_000)  # recent decode batch sizes
 
-    def add(self, req: Request) -> None:
+    def validate(self, req: Request) -> None:
+        """Raise ValueError for a request that can never run. Safe to call from any thread."""
+        if not req.prompt_ids:
+            raise ValueError("prompt is empty")
         if len(req.prompt_ids) + req.params.max_tokens > self.max_len:
-            raise ValueError(f"prompt + max_tokens exceeds max_len {self.max_len}")
+            raise ValueError(
+                f"prompt ({len(req.prompt_ids)} tokens) + max_tokens "
+                f"({req.params.max_tokens}) exceeds max_len {self.max_len}"
+            )
         if req.params.stop and self.decode is None:
             raise ValueError("stop sequences need a decode function")
+
+    def add(self, req: Request) -> None:
+        self.validate(req)
         self.waiting.append(req)
 
     @property
@@ -78,7 +101,8 @@ class Scheduler:
         return bool(self.waiting or self.running)
 
     def step(self) -> None:
-        """ADMIT waiting requests into free slots, then DECODE one token for all running."""
+        """REAP aborted requests, ADMIT waiting ones into free slots, DECODE one token for all."""
+        self._reap()
         self._admit()
         if self.running:
             slots = torch.tensor([r.slot for r in self.running])
@@ -95,6 +119,27 @@ class Scheduler:
             self.step()
         return self.done
 
+    def fail_all(self, reason: str = "error") -> None:
+        """After an unexpected exception: end every request so no client waits forever."""
+        for req in [*self.running, *self.waiting]:
+            if not req.finished:
+                req.finish_reason = reason
+                req.finish_time = time.monotonic()
+        self.waiting.clear()
+        self._evict()
+
+    def _reap(self) -> None:
+        now = time.monotonic()
+        for req in [*self.running, *self.waiting]:
+            if not req.finished and (reason := req.abort_reason(now)):
+                req.finish_reason = reason
+                req.finish_time = now
+        dropped = [r for r in self.waiting if r.finished]
+        self.waiting = deque(r for r in self.waiting if not r.finished)
+        for req in dropped:
+            self._finish(req)
+        self._evict()
+
     def _admit(self) -> None:
         while self.waiting and self.cache.num_free:
             req = self.waiting.popleft()
@@ -102,8 +147,8 @@ class Scheduler:
             req.admitted_step = self.steps
             req._gen = make_generator(req.params)
             req._seen = torch.tensor(req.prompt_ids)
+            self.running.append(req)  # before prefill, so fail_all() can free its slot
             logits = prefill(self.model, self.cache, req.slot, req.prompt_ids)
-            self.running.append(req)
             self._accept(req, logits)  # prefill's output is the first generated token
         self._evict()  # a request can finish on its first token (EOS or max_tokens=1)
 
@@ -140,8 +185,12 @@ class Scheduler:
             assert req.slot is not None
             self.cache.free(req.slot)  # slot is reusable on the very next admit
             req.slot = None
-            req.result = finalize(req.out, req.finish_reason or "length", req.params, self.decode)
-            if req.on_token:
-                req.on_token(None, req.finish_reason)
-            self.done.append(req)
+            self._finish(req)
         self.running = still
+
+    def _finish(self, req: Request) -> None:
+        req.result = finalize(req.out, req.finish_reason or "error", req.params, self.decode)
+        if req.on_token:
+            req.on_token(None, req.finish_reason)
+        if self.keep_done:
+            self.done.append(req)

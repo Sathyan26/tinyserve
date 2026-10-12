@@ -32,3 +32,9 @@ One entry per problem: date, symptom, hypotheses, what fixed it. Week 5's debugg
 - **Result:** 20 requests (max_tokens 5–80, mixed prompts), max_slots=4: every output equals `generate()` alone, greedy and seeded (mixed temperature/top_p/top_k/repetition penalty). >= 10 requests joined mid-run; all 4 slots returned at the end. Stop-string request leaves early and frees its slot.
 - **Counterfactual:** `alloc()` without `lengths[slot] = 0` -> crash "KV slot overflow: 274 > max_len 256" because reused slots kept growing. The overflow check turned a silent wrong-output bug into a loud one.
 - **First look, NOT a benchmark** (one run, all 20 arrive at t=0, laptop CPU): continuous 260 steps, 15.9 s, 58.3 tok/s, mean batch 3.49; static (groups of 4) 344 steps, 18.6 s, 49.7 tok/s, 34% of computed rows wasted on finished sequences. Proper Poisson-arrival benchmark comes in week 4.
+
+## 2026-10-12 — Steps 3.1–3.2 engine thread, random-arrival test
+- **Design:** only the engine thread touches model/cache/scheduler (no locks). `submit()` validates synchronously (bad request -> ValueError -> 400) and `put_nowait` (full -> QueueFull -> 429). The engine pulls from the queue only while `len(waiting) < free slots`; draining everything would move the backlog into an unbounded list and make the queue limit meaningless.
+- **Result:** 30 requests, shuffled order, Poisson gaps (mean 50 ms), half greedy / half seeded sampling, 4 slots: every output equals `generate()` alone, for 5 different arrival seeds.
+- **Contention check (seed 0):** decode steps by batch size {1: 14, 2: 10, 3: 1, 4: 169}; peak queue depth 26. So the test really runs a full, backed-up batch, not one request at a time.
+- **Production behaviours tested:** cancel mid-generation frees the slot within a step; deadline -> finish "timeout"; queue full -> QueueFull; an exception in one step fails only in-flight requests ("error") and the engine keeps serving.
