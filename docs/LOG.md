@@ -38,3 +38,11 @@ One entry per problem: date, symptom, hypotheses, what fixed it. Week 5's debugg
 - **Result:** 30 requests, shuffled order, Poisson gaps (mean 50 ms), half greedy / half seeded sampling, 4 slots: every output equals `generate()` alone, for 5 different arrival seeds.
 - **Contention check (seed 0):** decode steps by batch size {1: 14, 2: 10, 3: 1, 4: 169}; peak queue depth 26. So the test really runs a full, backed-up batch, not one request at a time.
 - **Production behaviours tested:** cancel mid-generation frees the slot within a step; deadline -> finish "timeout"; queue full -> QueueFull; an exception in one step fails only in-flight requests ("error") and the engine keeps serving.
+
+## 2026-10-12 — Steps 3.3–3.5 OpenAI-compatible server, SSE, production behaviours
+- **Result:** official `openai` client streams and non-streams unmodified; streamed text == non-streamed text == `generate()`; 400s in OpenAI error shape (n>1, temperature 5, empty messages, too long); 429 + Retry-After on full queue; disconnect after 3 chunks frees the slot within 5 s (200 tokens would take ~8 s).
+- **Bug (mine, in a test):** 429 test got 400. The test built `Engine` without `decode`, and the server always adds the "\nUser:" stop string, so validation correctly rejected it. Fixed the test, not the server.
+- **Design:** submit happens in the handler *before* the StreamingResponse starts, so overload/validation become real 429/400 status codes, not a broken 200 stream.
+- **Design:** `on_token` runs on the engine thread and uses `loop.call_soon_threadsafe`; if the loop is closed it raises RuntimeError, which would have been caught by the engine as a failed step and killed *every* in-flight request. Caught locally instead and the request is cancelled.
+- **Streaming detail:** text that could be the start of a stop string is held back. Seen live: "\n" waited 1 token (1127 -> 1280 ms) until "Assistant" proved it was not "\nUser:". Emoji test: " 🍕" is 2+ tokens and the first decodes to U+FFFD, so nothing is sent until the character completes.
+- **Open question:** live streaming runs ~80 ms/token vs ~41 ms/token in the week-1 KV benchmark. Candidates: SlotView gather copy per layer, max_len=512 slot, engine/asyncio hop. Measure in week 4 rather than guess.

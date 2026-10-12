@@ -1,2 +1,4 @@
 def main() -> None:
-    print("Hello from tinyserve!")
+    from tinyserve.server.app import main as serve
+
+    serve()
