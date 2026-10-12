@@ -49,14 +49,14 @@ def generate_batch(
     if any(p.stop for p in plist) and decode is None:
         raise ValueError("stop sequences need a decode function")
 
-    ids, key_mask = left_pad(prompts, pad_id=cfg.eos_token_id)
+    ids, key_mask = left_pad(prompts, pad_id=cfg.eos_token_ids[0])
     # position = how many real tokens came before, NOT the column index. With arange,
     # a prompt padded by 3 would start at position 3 and silently change its output.
     positions = (key_mask.long().cumsum(-1) - 1).clamp(min=0)
 
     max_new = max(p.max_tokens for p in plist)
     cache = KVCache(
-        cfg.n_layer, B, cfg.n_head, cfg.head_dim, ids.size(1) + max_new, dtype=model.dtype
+        cfg.n_layer, B, cfg.n_kv_head, cfg.head_dim, ids.size(1) + max_new, dtype=model.dtype
     )
     gens = [make_generator(p) for p in plist]
     seen = [torch.tensor(p) for p in prompts]  # real tokens only: padding never penalised
@@ -75,10 +75,10 @@ def generate_batch(
         nxt = []
         for b in range(B):
             if done[b]:
-                nxt.append(cfg.eos_token_id)  # filler; its output is never read
+                nxt.append(cfg.eos_token_ids[0])  # filler; its output is never read
                 continue
             tok = sample(logits[b], seen[b], plist[b], gens[b])
-            if tok == cfg.eos_token_id and not plist[b].ignore_eos:
+            if tok in cfg.eos_token_ids and not plist[b].ignore_eos:
                 done[b], finish[b] = True, "stop"
             else:
                 outs[b].append(tok)

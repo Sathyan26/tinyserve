@@ -3,16 +3,23 @@
 from pathlib import Path
 
 from huggingface_hub import hf_hub_download
+from huggingface_hub.errors import EntryNotFoundError
 from safetensors.torch import load_file
 from torch import Tensor
 
 GPT2_REPO = "openai-community/gpt2"
 FILES = ("model.safetensors", "config.json", "tokenizer.json")
+OPTIONAL_FILES = ("generation_config.json",)  # chat models list extra stop tokens here
 
 
 def download(repo_id: str = GPT2_REPO) -> Path:
     """Fetch weights, config and tokenizer into the HF cache; return the folder holding them."""
     paths = [Path(hf_hub_download(repo_id, name)) for name in FILES]
+    for name in OPTIONAL_FILES:
+        try:
+            hf_hub_download(repo_id, name)
+        except EntryNotFoundError:
+            pass
     return paths[0].parent
 
 

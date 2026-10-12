@@ -90,7 +90,7 @@ class Scheduler:
         self.decode = decode
         self.max_len = min(max_len or cfg.n_ctx, cfg.n_ctx)
         self.cache = SlotKVCache(
-            cfg.n_layer, max_slots, cfg.n_head, cfg.head_dim, self.max_len, dtype=model.dtype
+            cfg.n_layer, max_slots, cfg.n_kv_head, cfg.head_dim, self.max_len, dtype=model.dtype
         )
         self.waiting: deque[Request] = deque()
         self.running: list[Request] = []
@@ -207,7 +207,7 @@ class Scheduler:
         now = time.perf_counter()
         if req.first_token_time is None:
             req.first_token_time = now
-        if tok == self.model.cfg.eos_token_id and not req.params.ignore_eos:
+        if tok in self.model.cfg.eos_token_ids and not req.params.ignore_eos:
             req.finish_reason = "stop"
         else:
             req.out.append(tok)

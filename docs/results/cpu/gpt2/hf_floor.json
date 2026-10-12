@@ -1,0 +1,15 @@
+{
+ "config": {
+  "hardware": "AMD Ryzen 7 4800H with Radeon Graphics",
+  "power_plan": "Battery Save",
+  "device": "cpu",
+  "requests": 30,
+  "runs": 3
+ },
+ "throughput_tok_s": 17.452295813602245,
+ "throughput_runs": [
+  17.452295813602245,
+  14.474072744226843,
+  20.784483783921576
+ ]
+}

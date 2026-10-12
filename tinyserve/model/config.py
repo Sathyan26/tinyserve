@@ -17,6 +17,15 @@ class GPT2Config:
     def head_dim(self) -> int:
         return self.n_embd // self.n_head
 
+    # the engine is model-agnostic and reads these two from every config
+    @property
+    def n_kv_head(self) -> int:
+        return self.n_head  # GPT-2 has one KV head per query head (no GQA)
+
+    @property
+    def eos_token_ids(self) -> tuple[int, ...]:
+        return (self.eos_token_id,)
+
     @classmethod
     def from_json(cls, path: Path) -> "GPT2Config":
         raw = json.loads(Path(path).read_text())

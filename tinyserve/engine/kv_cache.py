@@ -7,7 +7,7 @@ from torch import Tensor
 class KVCache:
     """Contiguous cache for one batch of sequences that all share the same length.
 
-    Allocated once up front: [n_layer, B, n_head, max_len, head_dim] for k and for v.
+    Allocated once up front: [n_layer, B, n_kv_head, max_len, head_dim] for k and for v.
     """
 
     def __init__(
@@ -45,7 +45,7 @@ class KVCache:
 class SlotKVCache:
     """One preallocated pool shared by every running request; each request owns one slot.
 
-    k, v: [n_layer, max_slots, n_head, max_len, head_dim]. Requests join (alloc) and leave
+    k, v: [n_layer, max_slots, n_kv_head, max_len, head_dim]. Requests join (alloc) and leave
     (free) without moving anyone else's memory. Cost: every slot reserves max_len positions
     whether it uses them or not, which is the waste paged KV memory (vLLM) removes.
     """

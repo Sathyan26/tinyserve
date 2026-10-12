@@ -48,7 +48,10 @@ select = ["E", "F", "I", "UP", "B"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-markers = ["slow: loads model weights (deselect with -m 'not slow')"]
+markers = [
+    "slow: loads model weights (deselect with -m 'not slow')",
+    "qwen: loads the 0.5B Qwen model (~2 GB RAM per copy)",
+]
 
 [dependency-groups]
 dev = [

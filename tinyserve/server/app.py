@@ -20,6 +20,7 @@ from tinyserve.engine.engine import Engine, QueueFull
 from tinyserve.engine.generate import find_stop
 from tinyserve.engine.sampler import SamplingParams
 from tinyserve.engine.scheduler import Request as EngineRequest
+from tinyserve.model.registry import MODELS, ChatFormat, gpt2_chat
 from tinyserve.model.tokenizer import Tokenizer
 from tinyserve.server.detok import TextStreamer
 from tinyserve.server.metrics import Metrics
@@ -27,7 +28,6 @@ from tinyserve.server.schemas import (
     ChatCompletion,
     ChatCompletionChunk,
     ChatCompletionRequest,
-    ChatMessage,
     Choice,
     ChunkChoice,
     Delta,
@@ -36,17 +36,9 @@ from tinyserve.server.schemas import (
 )
 
 DEFAULT_MAX_TOKENS = 128
-GPT2_STOP = "\nUser:"
-
-
-def gpt2_chat_prompt(messages: list[ChatMessage]) -> str:
-    """GPT-2 has no chat format, so tinyserve uses a plain transcript.
-
-    "User: hi\\nAssistant: hello\\nUser: ...\\nAssistant:" and stops at "\\nUser:".
-    """
-    names = {"system": "System", "user": "User", "assistant": "Assistant"}
-    lines = [f"{names[m.role]}: {m.content}" for m in messages]
-    return "\n".join(lines) + "\nAssistant:"
+GPT2_CHAT = MODELS["gpt2"].chat
+GPT2_STOP = GPT2_CHAT.stops[0]
+gpt2_chat_prompt = gpt2_chat  # kept for tests and older imports
 
 
 def openai_error(status: int, message: str, kind: str, headers: dict | None = None):
@@ -54,7 +46,12 @@ def openai_error(status: int, message: str, kind: str, headers: dict | None = No
     return JSONResponse(status_code=status, content=body, headers=headers)
 
 
-def create_app(engine: Engine, tokenizer: Tokenizer, model_name: str = "gpt2") -> FastAPI:
+def create_app(
+    engine: Engine,
+    tokenizer: Tokenizer,
+    model_name: str = "gpt2",
+    chat: ChatFormat = GPT2_CHAT,
+) -> FastAPI:
     @asynccontextmanager
     async def lifespan(_: FastAPI):
         engine.start()
@@ -100,10 +97,10 @@ def create_app(engine: Engine, tokenizer: Tokenizer, model_name: str = "gpt2") -
     async def chat_completions(body: ChatCompletionRequest):
         if body.n != 1:
             return reject(400, "n > 1 is not supported")
-        prompt_ids = tokenizer.encode(gpt2_chat_prompt(body.messages))
+        prompt_ids = tokenizer.encode(chat.render(body.messages))
         stops = tuple([body.stop] if isinstance(body.stop, str) else body.stop or [])
         if not body.ignore_eos:
-            stops += (GPT2_STOP,)
+            stops += chat.stops
         room = engine.scheduler.max_len - len(prompt_ids)
         max_tokens = body.max_completion_tokens or body.max_tokens or min(DEFAULT_MAX_TOKENS, room)
         try:
@@ -254,13 +251,12 @@ async def sse(
 
 
 def build_from_env() -> FastAPI:
-    from tinyserve.model.gpt2 import GPT2
-    from tinyserve.model.weights import download
+    from tinyserve.model.registry import load
 
-    folder = download()
-    tokenizer = Tokenizer(folder)
+    name = os.environ.get("TINYSERVE_MODEL", "gpt2")
+    model, tokenizer, chat = load(name)
     engine = Engine(
-        GPT2.from_pretrained(folder),
+        model,  # type: ignore[arg-type]
         max_slots=int(os.environ.get("TINYSERVE_MAX_SLOTS", 8)),
         max_len=int(os.environ.get("TINYSERVE_MAX_LEN", 1024)),
         max_queue=int(os.environ.get("TINYSERVE_MAX_QUEUE", 64)),
@@ -268,7 +264,7 @@ def build_from_env() -> FastAPI:
         decode=tokenizer.decode,
         mode=os.environ.get("TINYSERVE_SCHEDULER_MODE", "continuous"),
     )
-    return create_app(engine, tokenizer)
+    return create_app(engine, tokenizer, name, chat)
 
 
 def main() -> None:
